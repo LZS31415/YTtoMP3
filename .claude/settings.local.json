@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show:*)",
+      "Bash(where python:*)",
+      "Bash(where py:*)",
+      "Read(//c/Users/lauzh/AppData/Local/Programs/**)",
+      "Bash(ls /c/Python*)",
+      "Bash(where node:*)",
+      "Bash(where npm:*)",
+      "Bash(where ffmpeg:*)"
+    ]
+  }
+}
