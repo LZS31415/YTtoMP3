@@ -1,33 +1,23 @@
 @echo off
+chcp 65001 >nul
 echo ============================================
-echo  YouTube Playlist/Video MP3 Downloader
+echo  YouTube Video / Playlist MP3 Downloader
 echo ============================================
 echo.
 
-REM Check for Python
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Python is not installed. Please run setup.bat first.
-    pause
-    exit /b 1
-)
-
-REM Check for yt-dlp
+if errorlevel 1 goto :no_setup
 python -c "import yt_dlp" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo yt-dlp is not installed. Please run setup.bat first.
-    pause
-    exit /b 1
-)
+if errorlevel 1 goto :no_setup
 
-REM Run downloader - accept URL as argument or prompt interactively
-if "%~1"=="" (
-    set /p URL="Enter YouTube URL (video or playlist): "
-) else (
-    set URL=%~1
-)
+REM The link is read by Python, not by "set /p": YouTube links contain "&",
+REM which cmd treats as a command separator.
+python "%~dp0downloader.py" %*
+goto :end
 
-python "%~dp0downloader.py" "%URL%"
+:no_setup
+echo Python or yt-dlp is missing. Run setup.bat first.
 
+:end
 echo.
 pause

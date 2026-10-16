@@ -1,76 +1,61 @@
 @echo off
+setlocal
+REM Note for editors: never put ( or ) inside an echo within an if-block in
+REM this file. cmd treats ")" as the end of the block and the whole script
+REM crashes instantly. That is exactly the bug the old version had.
 echo ============================================
 echo  YouTube MP3 Downloader - Setup
 echo ============================================
 echo.
 
-REM Check for Python
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Python not found. Installing via winget...
-    winget install Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
-    echo.
-    echo Python installed. Please close and reopen this window, then run setup.bat again.
-    pause
-    exit /b
-)
+if errorlevel 1 goto :install_python
+echo [OK] Python found.
 
-echo Python found.
-echo.
-
-REM Upgrade pip
-echo Upgrading pip...
+echo Installing / updating yt-dlp and its JavaScript runtime. This can take a minute...
 python -m pip install --upgrade pip --quiet
+python -m pip install --upgrade -r "%~dp0requirements.txt"
+if errorlevel 1 goto :pip_failed
+echo [OK] yt-dlp and Deno installed.
 
-REM Install yt-dlp
-echo Installing yt-dlp...
-python -m pip install yt-dlp --upgrade --quiet
-if %errorlevel% neq 0 (
-    echo ERROR: Failed to install yt-dlp.
-    pause
-    exit /b 1
-)
-
-REM Check for Node.js (required by yt-dlp for YouTube extraction)
-where node >nul 2>&1
-if %errorlevel% neq 0 (
-    echo.
-    echo Node.js not found. Installing via winget (required by yt-dlp)...
-    winget install OpenJS.NodeJS --silent --accept-package-agreements --accept-source-agreements
-    if %errorlevel% neq 0 (
-        echo ERROR: Could not install Node.js. Please install it manually from https://nodejs.org
-        pause
-        exit /b 1
-    )
-    echo Node.js installed. Refreshing PATH...
-    call refreshenv >nul 2>&1
-    echo.
-) else (
-    echo Node.js found.
-)
-
-REM Check for ffmpeg
 where ffmpeg >nul 2>&1
-if %errorlevel% neq 0 (
-    echo.
-    echo ffmpeg not found. Installing via winget...
-    winget install Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements
-    if %errorlevel% neq 0 (
-        echo.
-        echo Could not auto-install ffmpeg. Please install it manually:
-        echo   1. Go to https://ffmpeg.org/download.html
-        echo   2. Download a Windows build
-        echo   3. Extract and add the bin folder to your PATH
-        echo.
-    ) else (
-        echo ffmpeg installed successfully.
-    )
-) else (
-    echo ffmpeg found.
-)
+if errorlevel 1 goto :install_ffmpeg
+echo [OK] ffmpeg found.
+goto :done
 
+:install_python
+echo Python not found. Installing it with winget...
+winget install Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
+echo.
+echo Python installed. Close this window and run setup.bat again.
+goto :end
+
+:install_ffmpeg
+echo ffmpeg not found. Installing it with winget...
+winget install Gyan.FFmpeg --silent --accept-package-agreements --accept-source-agreements
+if errorlevel 1 goto :ffmpeg_failed
+echo [OK] ffmpeg installed. Close this window and open download.bat in a NEW window.
+goto :done
+
+:ffmpeg_failed
+echo.
+echo Could not install ffmpeg automatically. Install it manually:
+echo   1. Go to https://www.gyan.dev/ffmpeg/builds/
+echo   2. Download ffmpeg-release-essentials.zip and extract it
+echo   3. Add its bin folder to your PATH
+goto :end
+
+:pip_failed
+echo.
+echo ERROR: installing Python packages failed. Scroll up for the reason.
+goto :end
+
+:done
 echo.
 echo ============================================
-echo  Setup complete! Run download.bat to use.
+echo  Setup complete. Run download.bat to use it.
 echo ============================================
+
+:end
+echo.
 pause
