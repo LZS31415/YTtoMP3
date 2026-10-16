@@ -2,7 +2,7 @@
 
 Paste a YouTube link, get MP3s with title, artist and cover art in `Downloads/YouTube Music`. Works for single videos, whole playlists, and long compilation videos, which it can split into one MP3 per song.
 
-Sister project: [TikTokToMP3](https://github.com/LZS31415/TikTokToMP3).
+Sister project: [ttdytomp3](https://github.com/LZS31415/ttdytomp3) (TikTok / Douyin to MP3).
 
 ## Quick start (Windows)
 
