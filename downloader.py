@@ -11,6 +11,11 @@ Usage:
   python downloader.py                      (interactive, paste links one by one)
   python downloader.py <url> [<url> ...]
   python downloader.py --all <url>          (whole playlist/Mix without asking)
+  python downloader.py --split <url>        (one MP3 per chapter for long compilations)
+
+Videos with chapters (the clickable timestamps under a compilation video) can
+be split into one MP3 per song. Interactive mode asks; the command line
+splits only with --split.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from urllib.parse import parse_qs, urlparse
 
 try:
     import yt_dlp
+    from yt_dlp.postprocessor import FFmpegSplitChaptersPP
 except ImportError:
     print("yt-dlp not found. Please run setup.bat first.")
     sys.exit(1)
@@ -111,8 +117,69 @@ def find_js_runtime() -> dict | None:
 
 class Stats:
     def __init__(self):
-        self.done = 0
+        self.done = 0       # videos fully processed
+        self.songs = 0      # extra MP3s created by chapter splitting
         self.titles: list[str] = []
+
+
+# --------------------------------------------------------------------------- #
+# Chapter splitting
+# --------------------------------------------------------------------------- #
+
+def chapter_folder_template(out_dir: str) -> str:
+    return os.path.join(out_dir, "%(title)s", "%(section_number)02d - %(section_title)s.%(ext)s")
+
+
+def retag(path: str, title: str, album: str | None, track: str) -> None:
+    """Give a chapter its own title/track number; keeps artist and cover art."""
+    from mutagen.easyid3 import EasyID3
+    tags = EasyID3(path)
+    tags["title"] = title
+    if album:
+        tags["album"] = album
+    tags["tracknumber"] = track
+    tags.save()
+
+
+class SplitIntoSongsPP(FFmpegSplitChaptersPP):
+    """Splits a long video at its chapter timestamps, one MP3 per chapter.
+
+    yt-dlp's own splitter copies the whole video's tags into every piece, so a
+    music player would show 30 songs all called "Top Hits Compilation 2026".
+    This retags each piece with its chapter title, the video title as album,
+    and a track number, then deletes the long file it was cut from.
+    """
+
+    def __init__(self, downloader, stats: Stats):
+        super().__init__(downloader)
+        self.stats = stats
+
+    def run(self, info):
+        files_to_delete, info = super().run(info)
+        pieces = [c for c in (info.get("chapters") or [])
+                  if c.get("filepath") and os.path.exists(c["filepath"])]
+        if len(pieces) < 2:
+            return files_to_delete, info  # nothing split: keep the full file
+
+        total = len(pieces)
+        for n, chapter in enumerate(pieces, 1):
+            try:
+                retag(chapter["filepath"], chapter.get("title") or f"Track {n}",
+                      info.get("title"), f"{n}/{total}")
+            except Exception as e:  # tags are cosmetic, the audio is already there
+                print(f"  (could not tag {os.path.basename(chapter['filepath'])}: {e})")
+        self.stats.songs += total
+        print(f"  Split into {total} songs in: {os.path.dirname(pieces[0]['filepath'])}")
+        return files_to_delete + [info["filepath"]], info
+
+
+def decide_split(chapters: list, split: bool | None) -> bool:
+    if split is not None:
+        return split
+    names = [c.get("title") or "?" for c in chapters[:3]]
+    print(f"  This video has {len(chapters)} chapters, e.g. " + " | ".join(names))
+    answer = input("  Save [1] one MP3 per chapter, or [2] one long MP3? (Enter = 1): ").strip()
+    return answer != "2"
 
 
 def build_options(out_dir: str, quality: str, whole_list: bool, stats: Stats) -> dict:
@@ -135,7 +202,10 @@ def build_options(out_dir: str, quality: str, whole_list: bool, stats: Stats) ->
     opts = {
         "format": "bestaudio/best",
         # "3 - Title.mp3" inside playlists, "Title.mp3" for single songs
-        "outtmpl": os.path.join(out_dir, "%(playlist_index&{} - |)s%(title)s.%(ext)s"),
+        "outtmpl": {
+            "default": os.path.join(out_dir, "%(playlist_index&{} - |)s%(title)s.%(ext)s"),
+            "chapter": chapter_folder_template(out_dir),  # used only when splitting
+        },
         "windowsfilenames": True,
         "noplaylist": not whole_list,
         "lazy_playlist": True,          # start downloading song 1 before the whole list is read
@@ -164,7 +234,8 @@ def build_options(out_dir: str, quality: str, whole_list: bool, stats: Stats) ->
 # Main flow
 # --------------------------------------------------------------------------- #
 
-def download(url: str, out_dir: str, quality: str, want_all: bool | None) -> bool:
+def download(url: str, out_dir: str, quality: str, want_all: bool | None,
+             split: bool | None = None) -> bool:
     url, whole_list = resolve_choice(url, classify(url), want_all)
     os.makedirs(out_dir, exist_ok=True)
     print(f"\n{'Downloading playlist' if whole_list else 'Downloading'}: {url}")
@@ -173,8 +244,24 @@ def download(url: str, out_dir: str, quality: str, want_all: bool | None) -> boo
 
     stats = Stats()
     with yt_dlp.YoutubeDL(build_options(out_dir, quality, whole_list, stats)) as ydl:
-        ydl.download([url])
+        if whole_list:
+            # Asking per video would interrupt a long playlist, so playlists
+            # only split when --split was given.
+            if split:
+                ydl.add_post_processor(SplitIntoSongsPP(ydl, stats), when="post_process")
+            ydl.download([url])
+        else:
+            # Read the video's details first so we can see its chapters, then download.
+            info = ydl.extract_info(url, download=False, process=False)
+            if info:
+                chapters = info.get("chapters") or []
+                if len(chapters) >= 2 and decide_split(chapters, split):
+                    ydl.add_post_processor(SplitIntoSongsPP(ydl, stats), when="post_process")
+                ydl.process_ie_result(info, download=True)
 
+    if stats.songs:
+        print(f"\nDone: {stats.songs} songs saved under {out_dir}")
+        return True
     if stats.done:
         print(f"\nDone: {stats.done} new MP3(s) in {out_dir}")
         return True
@@ -202,19 +289,25 @@ def main() -> None:
                        help="for a song opened from a playlist/Mix, download the whole list")
     group.add_argument("--single", dest="want_all", action="store_const", const=False,
                        help="for a song opened from a playlist/Mix, download only that song")
+    split_group = parser.add_mutually_exclusive_group()
+    split_group.add_argument("--split", dest="split", action="store_const", const=True,
+                             help="split videos with chapters into one MP3 per chapter")
+    split_group.add_argument("--no-split", dest="split", action="store_const", const=False,
+                             help="never split, and don't ask")
     args = parser.parse_args()
 
     check_setup()
 
     if args.urls:
         want_all = False if args.want_all is None else args.want_all  # never block on input()
+        split = False if args.split is None else args.split
         failed = 0
         for url in args.urls:
             if not is_youtube(url):
                 print(f"Skipping (not a YouTube link): {url}")
                 failed += 1
                 continue
-            failed += not download(url, args.output, args.quality, want_all)
+            failed += not download(url, args.output, args.quality, want_all, split)
         sys.exit(1 if failed else 0)
 
     print(f"Saving to: {args.output}")
@@ -228,7 +321,7 @@ def main() -> None:
         if not is_youtube(url):
             print("  That doesn't look like a YouTube link.")
             continue
-        download(url, args.output, args.quality, args.want_all)
+        download(url, args.output, args.quality, args.want_all, args.split)
 
 
 if __name__ == "__main__":
