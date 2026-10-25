@@ -7,7 +7,7 @@ import os
 import yt_dlp
 from yt_dlp.postprocessor import FFmpegSplitChaptersPP
 
-from .common import ARCHIVE_NAME, Stats, counting_hook, find_js_runtime, progress_hook
+from .common import ARCHIVE_NAME, Stats, counting_hook, find_js_runtime, progress_hook, say
 from .links import single_video_url, youtube_kind
 
 
@@ -23,7 +23,7 @@ def resolve_choice(url: str, kind: str, want_all: bool | None) -> tuple[str, boo
         return url, True
     if want_all is None:  # interactive: ask
         label = "a YouTube Mix (auto-generated, usually 25-50 songs)" if kind == "video_in_mix" else "a playlist"
-        print(f"  This song was opened from {label}.")
+        say(f"  This song was opened from {label}.")
         answer = input("  Download [1] just this song, or [2] the whole list? (Enter = 1): ").strip()
         want_all = answer == "2"
     return (url, True) if want_all else (single_video_url(url), False)
@@ -74,19 +74,40 @@ class SplitIntoSongsPP(FFmpegSplitChaptersPP):
                 retag(chapter["filepath"], chapter.get("title") or f"Track {n}",
                       info.get("title"), f"{n}/{total}")
             except Exception as e:  # tags are cosmetic, the audio is already there
-                print(f"  (could not tag {os.path.basename(chapter['filepath'])}: {e})")
+                say(f"  (could not tag {os.path.basename(chapter['filepath'])}: {e})")
         self.stats.songs += total
-        print(f"  Split into {total} songs in: {os.path.dirname(pieces[0]['filepath'])}")
+        say(f"  Split into {total} songs in: {os.path.dirname(pieces[0]['filepath'])}")
         return files_to_delete + [info["filepath"]], info
 
 
-def decide_split(chapters: list, split: bool | None) -> bool:
+# A video counts as a compilation worth splitting when it is long and its
+# chapters are song-length. Music videos often have chapters too ("Intro",
+# "Chorus"...), and cutting those into 20-second pieces would ruin the song.
+COMPILATION_MIN_SECONDS = 10 * 60
+COMPILATION_MIN_CHAPTERS = 3
+SONG_MIN_SECONDS = 90
+
+
+def looks_like_compilation(chapters: list, duration: float | None) -> bool:
+    if len(chapters) < COMPILATION_MIN_CHAPTERS:
+        return False
+    lengths = sorted((c.get("end_time") or 0) - (c.get("start_time") or 0) for c in chapters)
+    total = duration or (chapters[-1].get("end_time") or 0)
+    median = lengths[len(lengths) // 2]
+    return total >= COMPILATION_MIN_SECONDS and median >= SONG_MIN_SECONDS
+
+
+def decide_split(chapters: list, duration: float | None, split: bool | None) -> bool:
+    """split=True/False forces it; None means decide automatically."""
+    if len(chapters) < 2:
+        return False
     if split is not None:
         return split
-    names = [c.get("title") or "?" for c in chapters[:3]]
-    print(f"  This video has {len(chapters)} chapters, e.g. " + " | ".join(names))
-    answer = input("  Save [1] one MP3 per chapter, or [2] one long MP3? (Enter = 1): ").strip()
-    return answer != "2"
+    if looks_like_compilation(chapters, duration):
+        say(f"  Compilation with {len(chapters)} chapters: saving one MP3 per song "
+            "(type 'split off' before pasting to keep one long file).")
+        return True
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -125,19 +146,20 @@ def build_options(out_dir: str, quality: str, whole_list: bool, stats: Stats) ->
     return opts
 
 
-def download(url: str, out_dir: str, quality: str, want_all: bool | None,
+def download(url: str, out_dir: str, quality: str, whole_list: bool,
              split: bool | None = None) -> bool:
-    url, whole_list = resolve_choice(url, youtube_kind(url), want_all)
+    """Download one link. Call resolve_choice() first to settle whole_list:
+    it may ask a question, which belongs at paste time, not mid-queue."""
     os.makedirs(out_dir, exist_ok=True)
-    print(f"  {'Downloading playlist' if whole_list else 'Downloading'}: {url}")
+    say(f"  {'Downloading playlist' if whole_list else 'Downloading'}: {url}")
     if whole_list:
-        print("  (Songs already in the folder are skipped. Large lists take a while.)")
+        say("  (Songs already in the folder are skipped. Large lists take a while.)")
 
     stats = Stats()
     with yt_dlp.YoutubeDL(build_options(out_dir, quality, whole_list, stats)) as ydl:
         if whole_list:
-            # Asking per video would interrupt a long playlist, so playlists
-            # only split when --split was given.
+            # Playlists split only when forced: guessing per video across a
+            # long playlist would be too surprising.
             if split:
                 ydl.add_post_processor(SplitIntoSongsPP(ydl, stats), when="post_process")
             ydl.download([url])
@@ -145,17 +167,16 @@ def download(url: str, out_dir: str, quality: str, want_all: bool | None,
             # Read the video's details first so we can see its chapters, then download.
             info = ydl.extract_info(url, download=False, process=False)
             if info:
-                chapters = info.get("chapters") or []
-                if len(chapters) >= 2 and decide_split(chapters, split):
+                if decide_split(info.get("chapters") or [], info.get("duration"), split):
                     ydl.add_post_processor(SplitIntoSongsPP(ydl, stats), when="post_process")
                 ydl.process_ie_result(info, download=True)
 
     if stats.songs:
-        print(f"  Done: {stats.songs} songs saved under {out_dir}")
+        say(f"  Done: {stats.songs} songs saved under {out_dir}")
         return True
     if stats.done:
-        print(f"  Done: {stats.done} new MP3(s) in {out_dir}")
+        say(f"  Done: {stats.done} new MP3(s) in {out_dir}")
         return True
-    print("  Nothing new was downloaded. Either it was already in the folder, or the video "
-          "is private/blocked. Run setup.bat to update yt-dlp, then try again.")
+    say("  Nothing new was downloaded. Either it was already in the folder, or the video "
+        "is private/blocked. Run setup.bat to update yt-dlp, then try again.")
     return False

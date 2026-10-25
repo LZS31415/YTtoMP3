@@ -7,17 +7,29 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 
 DOWNLOADS = os.path.join(os.path.expanduser("~"), "Downloads")
-# Each source keeps its own folder, so existing libraries and their
-# "already downloaded" lists keep working after the merge.
-DEFAULT_FOLDERS = {
-    "youtube": os.path.join(DOWNLOADS, "YouTube Music"),
-    "tiktok": os.path.join(DOWNLOADS, "TikTok Music"),
-    "douyin": os.path.join(DOWNLOADS, "TikTok Music"),
-}
+DEFAULT_FOLDER = os.path.join(DOWNLOADS, "Music Downloads")  # every site saves here
 ARCHIVE_NAME = ".downloaded.txt"  # yt-dlp's format: "<extractor> <id>" per line
 MAX_TITLE_CHARS = 60
+
+
+# --------------------------------------------------------------------------- #
+# Output
+# --------------------------------------------------------------------------- #
+
+_print_lock = threading.Lock()
+# Live progress bars rewrite the current line with "\r". That is fine when
+# downloads run one at a time, but in queue mode the user is typing on that
+# line, so the queue switches them off and only whole lines are printed.
+LIVE_PROGRESS = True
+
+
+def say(message: str = "") -> None:
+    """Print one whole line, safely from any thread."""
+    with _print_lock:
+        print(message, flush=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -122,15 +134,19 @@ class Stats:
 
 
 def progress_hook(d):
+    if not LIVE_PROGRESS:
+        return
     info = d.get("info_dict", {})
     title = (info.get("title") or "")[:50]
     pos = info.get("playlist_index")
     prefix = f"[{pos}] " if pos else ""
     if d["status"] == "downloading":
         pct = (d.get("_percent_str") or "").strip()
-        print(f"\r  {prefix}{title:<50} {pct:>7}", end="", flush=True)
+        with _print_lock:
+            print(f"\r  {prefix}{title:<50} {pct:>7}", end="", flush=True)
     elif d["status"] == "finished":
-        print(f"\r  {prefix}{title:<50} converting...", flush=True)
+        with _print_lock:
+            print(f"\r  {prefix}{title:<50} converting...", flush=True)
 
 
 def counting_hook(stats: Stats):

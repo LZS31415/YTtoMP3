@@ -7,7 +7,7 @@ import os
 import yt_dlp
 from yt_dlp.postprocessor import PostProcessor
 
-from .common import Stats, archive_path, clean_title, counting_hook, progress_hook
+from .common import Stats, archive_path, clean_title, counting_hook, progress_hook, say
 
 
 class CleanTitlePP(PostProcessor):
@@ -51,10 +51,10 @@ def download(url: str, out_dir: str, quality: str, browser: str | None = None) -
         ydl.add_post_processor(CleanTitlePP(), when="pre_process")
         errors = ydl.download([url])
     if stats.done:
-        print(f"  Done: {stats.done} new MP3(s) in {out_dir}")
+        say(f"  Done: {stats.done} new MP3(s) in {out_dir}")
         return True
     if errors == 0:
-        print("  Nothing new: already in the folder.")
+        say("  Nothing new: already in the folder.")
         return True
-    print("  Download failed. Run setup.bat to update yt-dlp, then try again.")
+    say("  Download failed. Run setup.bat to update yt-dlp, then try again.")
     return False
