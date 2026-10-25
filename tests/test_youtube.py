@@ -1,4 +1,4 @@
-"""Offline tests (no YouTube access needed). Run:  python -m unittest discover tests"""
+"""YouTube offline tests (no YouTube access needed)."""
 
 import os
 import shutil
@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import downloader as d  # noqa: E402
+from mp3tool import common, links, youtube  # noqa: E402
 import yt_dlp  # noqa: E402
 
 
@@ -24,22 +24,22 @@ class TestLinks(unittest.TestCase):
             "https://www.youtube.com/shorts/abc": "video",
         }
         for url, kind in cases.items():
-            self.assertEqual(d.classify(url), kind, url)
+            self.assertEqual(links.youtube_kind(url), kind, url)
 
     def test_single_video_url_strips_list(self):
         self.assertEqual(
-            d.single_video_url("https://www.youtube.com/watch?v=8Sy0AUxIbgw&list=RD8Sy0AUxIbgw&start_radio=1"),
+            links.single_video_url("https://www.youtube.com/watch?v=8Sy0AUxIbgw&list=RD8Sy0AUxIbgw&start_radio=1"),
             "https://www.youtube.com/watch?v=8Sy0AUxIbgw")
-        self.assertEqual(d.single_video_url("https://youtu.be/abc?list=PLx"), "https://youtu.be/abc")
+        self.assertEqual(links.single_video_url("https://youtu.be/abc?list=PLx"), "https://youtu.be/abc")
 
     def test_is_youtube(self):
-        self.assertTrue(d.is_youtube("https://m.youtube.com/watch?v=1"))
-        self.assertFalse(d.is_youtube("https://notyoutube.com/watch?v=1"))
+        self.assertEqual(links.platform_of("https://m.youtube.com/watch?v=1"), "youtube")
+        self.assertIsNone(links.platform_of("https://notyoutube.com/watch?v=1"))
 
     def test_choice_without_prompt(self):
         mix = "https://www.youtube.com/watch?v=abc&list=RDabc"
-        self.assertEqual(d.resolve_choice(mix, "video_in_mix", False), ("https://www.youtube.com/watch?v=abc", False))
-        self.assertEqual(d.resolve_choice(mix, "video_in_mix", True), (mix, True))
+        self.assertEqual(youtube.resolve_choice(mix, "video_in_mix", False), ("https://www.youtube.com/watch?v=abc", False))
+        self.assertEqual(youtube.resolve_choice(mix, "video_in_mix", True), (mix, True))
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg not installed")
@@ -71,13 +71,13 @@ class TestPipeline(unittest.TestCase):
         return info
 
     def run_pipeline(self, info, split):
-        stats = d.Stats()
-        opts = d.build_options(self.out, "128", False, stats)
+        stats = common.Stats()
+        opts = youtube.build_options(self.out, "128", False, stats)
         opts["enable_file_urls"] = True
         opts["progress_hooks"] = []
         with yt_dlp.YoutubeDL(opts) as ydl:
             if split:
-                ydl.add_post_processor(d.SplitIntoSongsPP(ydl, stats), when="post_process")
+                ydl.add_post_processor(youtube.SplitIntoSongsPP(ydl, stats), when="post_process")
             ydl.process_ie_result(info, download=True)
         return stats
 
@@ -106,7 +106,7 @@ class TestPipeline(unittest.TestCase):
 
     def test_already_downloaded_is_skipped(self):
         self.run_pipeline(self.fake_info(), split=False)
-        archive = open(os.path.join(self.out, d.ARCHIVE_NAME)).read()
+        archive = open(os.path.join(self.out, common.ARCHIVE_NAME)).read()
         self.assertIn("abc123", archive)
 
 

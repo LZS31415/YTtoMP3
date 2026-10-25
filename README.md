@@ -1,45 +1,91 @@
-# YouTube to MP3
+# YouTube / TikTok / Douyin to MP3
 
-Paste a YouTube link, get MP3s with title, artist and cover art in `Downloads/YouTube Music`. Works for single videos, whole playlists, and long compilation videos, which it can split into one MP3 per song.
-
-Sister project: [ttdytomp3](https://github.com/LZS31415/ttdytomp3) (TikTok / Douyin to MP3).
+Paste a link, or the whole share text from the TikTok or Douyin app, and get MP3s with title, artist and cover art. One program for all three sites: single videos, whole playlists, and long compilation videos split into one MP3 per song.
 
 ## Quick start (Windows)
 
-1. Double-click `setup.bat` once. It installs yt-dlp, the Deno JavaScript runtime and ffmpeg if missing.
+1. Double-click `setup.bat` once. It installs yt-dlp, the Deno JavaScript runtime, browser impersonation support and ffmpeg if missing.
 2. Double-click `download.bat`, paste a link, press Enter. Paste another, or press Enter on an empty line to quit.
 
-## What happens with each kind of link
+YouTube songs go to `Downloads/YouTube Music`, TikTok and Douyin to `Downloads/TikTok Music`. Use `-o <folder>` to put everything in one place.
+
+## What it handles
 
 | You paste | What it does |
 |---|---|
-| A video (`watch?v=...`, `youtu.be/...`, Shorts) | Downloads that song |
-| A playlist (`playlist?list=...`) | Downloads the whole playlist as `1 - Title.mp3`, `2 - Title.mp3`, ... |
-| A song you opened from a playlist or Mix (`watch?v=...&list=...`) | Asks: just this song, or the whole list (Enter = just the song) |
-| A compilation video with chapters (timestamps) | Asks: one MP3 per chapter, or one long MP3 (Enter = split) |
+| YouTube video (`watch?v=...`, `youtu.be/...`, Shorts, YouTube Music) | Downloads that song |
+| YouTube playlist (`playlist?list=...`) | Downloads the whole playlist as `1 - Title.mp3`, `2 - Title.mp3`, ... |
+| A YouTube song opened from a playlist or Mix (`watch?v=...&list=...`) | Asks: just this song, or the whole list (Enter = just the song) |
+| A YouTube compilation with chapters (timestamps) | Asks: one MP3 per chapter, or one long MP3 (Enter = split) |
+| TikTok video, `vt.tiktok.com` short link, profile or collection | Downloads the audio as `Creator - Caption.mp3` |
+| Douyin video or image post, `v.douyin.com` share link | Downloads the audio (the background music for image posts) |
+| The raw share text from the TikTok/Douyin app, Chinese and hashtags included | Finds the link inside it |
+| Several links in one paste, any mix of sites | Handles each in turn |
+| Soda Music (`qishui.douyin.com`) | Explains why it isn't supported (see below) |
 
-Split songs go into a folder named after the video, as `01 - Song.mp3`, `02 - Song.mp3`, ..., each tagged with its own title, the video title as album, and a track number.
-
-Songs already downloaded are skipped, so re-running a playlist only fetches what is new.
+Split songs go into a folder named after the video, as `01 - Song.mp3`, `02 - Song.mp3`, ..., each tagged with its own title, the video title as album, and a track number. Anything already downloaded is skipped, so re-running a playlist or profile only fetches what is new.
 
 ### Command line
 
 ```
-python downloader.py <url> [<url> ...]
-python downloader.py --all <url>      # song from a playlist/Mix: download the whole list
-python downloader.py --split <url>    # split chapters into separate MP3s (also applies to playlists)
+python downloader.py <link or share text> [...]
+python downloader.py --all <url>      # YouTube song from a playlist/Mix: download the whole list
+python downloader.py --split <url>    # YouTube: split chapters into separate MP3s (also applies to playlists)
+python downloader.py -b firefox <url> # Douyin/TikTok: borrow cookies from this browser
 python downloader.py -q 320 -o D:\Music <url>
 ```
 
 On the command line it never stops to ask: it downloads just the song and does not split, unless you pass `--all` or `--split`.
 
+## How it works
+
+```
+pasted text ─► find links ─► YouTube ─► yt-dlp ─┬─ playlist / Mix choice ─┬─► MP3 + tags + cover
+                         │                      └─ chapters? split + retag ┘
+                         ├─► TikTok  ─► yt-dlp ─► clean caption into a title ─► MP3 + tags + cover
+                         └─► Douyin  ─► share page resolver ─► ffmpeg ─► MP3 + tags + cover
+                                       (no data? escalate cookies: revisit ► visitor token ► browser)
+```
+
+Code layout:
+
+```
+downloader.py        entry point: reads links, routes each one, keeps one session
+mp3tool/links.py     finds links in pasted text and works out the site
+mp3tool/youtube.py   playlists, Mix handling, chapter splitting
+mp3tool/tiktok.py    TikTok via yt-dlp, caption cleanup
+mp3tool/douyin.py    Douyin share page resolver and cookie escalation
+mp3tool/common.py    folders, archive, ffmpeg conversion, JS runtime, progress
+```
+
 ## Design notes
 
-- **YouTube now requires a JavaScript runtime.** Before handing out audio, YouTube makes clients solve a JavaScript challenge. Without a runtime, yt-dlp loses formats and eventually fails. `setup.bat` installs Deno through pip (`yt-dlp[default,deno]`), so there is no Node.js install or PATH change to go wrong.
+**YouTube**
+
+- **YouTube now requires a JavaScript runtime.** Before handing out audio, YouTube makes clients solve a JavaScript challenge. Without a runtime, yt-dlp loses formats and eventually fails. `setup.bat` installs Deno through pip, so there is no Node.js install or PATH change to go wrong.
 - **Mix links are a trap.** Copying the link of a song playing in a Mix gives `&list=RD...`, an auto-generated list of 25 to 50 songs. The tool spots this and asks instead of silently downloading the lot.
-- **Chapters need retagging.** yt-dlp's chapter splitter copies the whole video's tags into every piece, so a music player would show 30 tracks with the same name. Each piece gets its own title and track number, and the long file is removed.
+- **Chapters need retagging.** yt-dlp's chapter splitter copies the whole video's tags into every piece, so a music player would show 30 tracks with the same name. Each piece gets its own title and track number, and the long file is removed only when the split actually produced songs.
 - **Start fast.** Playlists are read lazily, so song 1 starts downloading before the whole list has been read.
-- **Batch file safety.** The scripts avoid `if (...)` blocks entirely. A `)` inside an `echo` in such a block silently ends it and crashes the script, which is what broke the first version of `setup.bat`.
+
+**Douyin**
+
+- **Why Douyin has its own path.** yt-dlp's Douyin extractor needs fresh browser cookies and doesn't recognise `v.douyin.com` share links, which is what people actually copy from the app. Douyin's mobile share page embeds the post's metadata, so the tool resolves the link, reads that page and downloads the media directly. The parser looks for the post object by shape, not a fixed JSON path, because Douyin reshuffles that structure often.
+- **The cookie wall.** Douyin serves the share page to cookie-less requests with the post data stripped out. The resolver escalates only as far as it needs to and keeps whatever worked for the rest of the session: visit again keeping any cookies Douyin set, then register an anonymous visitor token (`ttwid`) the way Douyin's web app does, then borrow Douyin cookies from Firefox, Edge or Chrome. If all three fail, the page Douyin returned is saved to `_debug/` so the failure can be diagnosed instead of guessed at.
+
+**Soda Music is deliberately out of scope.** Soda Music (汽水音乐) share links live on a Douyin domain but are a separate, licensed music service. Its web page only plays a short preview and sends you to the app for the full song, and downloading is a paid VIP feature. Fetching the full file anyway would mean working around that paywall, so the tool says so and suggests a YouTube or Douyin link instead.
+
+**General**
+
+- **Paste anything.** People copy the whole share blob, not a clean URL, so finding links is the first step, not an afterthought.
+- **One bad link never ends the session.** Every link is handled on its own; a failure prints a reason and the prompt comes back.
+- **Batch file safety.** The scripts avoid `if (...)` blocks entirely. A `)` inside an `echo` in such a block silently ends it and crashes the script, and `%errorlevel%` inside a block is read before the block runs. Both bit earlier versions.
+
+## Known limitations
+
+- You get the video's audio track. If the creator talks over the music, that is in the MP3 too.
+- Douyin changes its pages and anti-bot rules without notice. If the visitor token stops working, open douyin.com once in Firefox and run again. Firefox is the most reliable browser to borrow from on Windows because Chrome and Edge encrypt their cookies in a way that often cannot be read.
+- Douyin profile downloads are not supported; they need signed API requests.
+- Keep yt-dlp current (`setup.bat` upgrades it). Most YouTube and TikTok breakages are fixed upstream within days.
 
 ## Tests
 
@@ -47,8 +93,8 @@ On the command line it never stops to ask: it downloads just the song and does n
 python -m unittest discover tests
 ```
 
-Offline tests cover link classification, and run the real yt-dlp + ffmpeg pipeline on a local 3-chapter file to check splitting, tagging, skipping already-downloaded songs, and that nothing is lost when a video has no chapters.
+Offline tests cover link detection across all three sites (including mixed pastes and Soda Music), YouTube link shapes, the Douyin parser against a captured real share page, the cookie escalation logic, ffmpeg conversion with cover art, and the real yt-dlp + ffmpeg pipeline on local files, including a 3-chapter split with per-song tags.
 
 ## Disclaimer
 
-For personal use with content you have the right to download.
+For personal use with content you have the right to download. Respect creators and platform terms.
