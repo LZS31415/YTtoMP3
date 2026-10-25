@@ -1,13 +1,27 @@
 # YouTube / TikTok / Douyin to MP3
 
-Paste a link, or the whole share text from the TikTok or Douyin app, and get MP3s with title, artist and cover art. One program for all three sites: single videos, whole playlists, and long compilation videos split into one MP3 per song.
+Paste a link, or the whole share text from the TikTok or Douyin app, and get MP3s with title, artist and cover art. One program for all three sites: single videos, whole playlists, and long compilation videos split into one MP3 per song. Keep pasting while it downloads: every link joins a queue.
 
 ## Quick start (Windows)
 
 1. Double-click `setup.bat` once. It installs yt-dlp, the Deno JavaScript runtime, browser impersonation support and ffmpeg if missing.
-2. Double-click `download.bat`, paste a link, press Enter. Paste another, or press Enter on an empty line to quit.
+2. Double-click `download.bat`, paste a link, press Enter. Paste the next one straight away, no need to wait. Press Enter on an empty line to quit once the queue is done.
 
-YouTube songs go to `Downloads/YouTube Music`, TikTok and Douyin to `Downloads/TikTok Music`. Use `-o <folder>` to put everything in one place.
+Everything is saved to `Downloads/Music Downloads`. Use `-o <folder>` to pick another folder.
+
+### The queue
+
+Each link is queued the moment you paste it, and one background worker downloads them in the order you pasted. While it runs you can type:
+
+| Type | What it does |
+|---|---|
+| a link, several links, or share text | Adds them to the queue |
+| `status` | Shows what is downloading, how many are waiting, and how many finished |
+| `split auto` | Split YouTube videos into songs only when they look like compilations (default) |
+| `split on` / `split off` | Always / never split YouTube videos that have chapters |
+| Enter on an empty line | Finishes the queue, then closes. Ctrl+C stops immediately |
+
+The same link pasted twice in one session is only downloaded once.
 
 ## What it handles
 
@@ -16,7 +30,7 @@ YouTube songs go to `Downloads/YouTube Music`, TikTok and Douyin to `Downloads/T
 | YouTube video (`watch?v=...`, `youtu.be/...`, Shorts, YouTube Music) | Downloads that song |
 | YouTube playlist (`playlist?list=...`) | Downloads the whole playlist as `1 - Title.mp3`, `2 - Title.mp3`, ... |
 | A YouTube song opened from a playlist or Mix (`watch?v=...&list=...`) | Asks: just this song, or the whole list (Enter = just the song) |
-| A YouTube compilation with chapters (timestamps) | Asks: one MP3 per chapter, or one long MP3 (Enter = split) |
+| A YouTube compilation with chapters (timestamps) | Splits it into one MP3 per song automatically (see below) |
 | TikTok video, `vt.tiktok.com` short link, profile or collection | Downloads the audio as `Creator - Caption.mp3` |
 | Douyin video or image post, `v.douyin.com` share link | Downloads the audio (the background music for image posts) |
 | The raw share text from the TikTok/Douyin app, Chinese and hashtags included | Finds the link inside it |
@@ -35,7 +49,7 @@ python downloader.py -b firefox <url> # Douyin/TikTok: borrow cookies from this 
 python downloader.py -q 320 -o D:\Music <url>
 ```
 
-On the command line it never stops to ask: it downloads just the song and does not split, unless you pass `--all` or `--split`.
+On the command line there is no queue: it runs the links in order and exits. It never stops to ask: it downloads just the song and does not split, unless you pass `--all` or `--split`.
 
 ## How it works
 
@@ -50,7 +64,7 @@ pasted text ─► find links ─► YouTube ─► yt-dlp ─┬─ playlist / 
 Code layout:
 
 ```
-downloader.py        entry point: reads links, routes each one, keeps one session
+downloader.py        entry point: reads links, asks any question at paste time, queues jobs
 mp3tool/links.py     finds links in pasted text and works out the site
 mp3tool/youtube.py   playlists, Mix handling, chapter splitting
 mp3tool/tiktok.py    TikTok via yt-dlp, caption cleanup
@@ -64,6 +78,7 @@ mp3tool/common.py    folders, archive, ffmpeg conversion, JS runtime, progress
 
 - **YouTube now requires a JavaScript runtime.** Before handing out audio, YouTube makes clients solve a JavaScript challenge. Without a runtime, yt-dlp loses formats and eventually fails. `setup.bat` installs Deno through pip, so there is no Node.js install or PATH change to go wrong.
 - **Mix links are a trap.** Copying the link of a song playing in a Mix gives `&list=RD...`, an auto-generated list of 25 to 50 songs. The tool spots this and asks instead of silently downloading the lot.
+- **Splitting decides itself.** A question in the middle of a download would collide with the next link you are pasting, so the queue decides: a video is split when it is at least 10 minutes long with 3 or more chapters of song length (median 90 seconds or more). Music videos often have chapters too ("Intro", "Chorus"), and cutting those into 20-second pieces would ruin the song. `split on` / `split off` override it.
 - **Chapters need retagging.** yt-dlp's chapter splitter copies the whole video's tags into every piece, so a music player would show 30 tracks with the same name. Each piece gets its own title and track number, and the long file is removed only when the split actually produced songs.
 - **Start fast.** Playlists are read lazily, so song 1 starts downloading before the whole list has been read.
 
@@ -77,7 +92,8 @@ mp3tool/common.py    folders, archive, ffmpeg conversion, JS runtime, progress
 **General**
 
 - **Paste anything.** People copy the whole share blob, not a clean URL, so finding links is the first step, not an afterthought.
-- **One bad link never ends the session.** Every link is handled on its own; a failure prints a reason and the prompt comes back.
+- **One bad link never ends the session.** Every link is handled on its own; a failure prints a reason and the queue moves on.
+- **Questions at paste time, downloads in the background.** The only question left, "just this song or the whole Mix?", depends on the link alone, so it is asked the moment you paste. One worker downloads in order: it avoids hitting a site with parallel requests and keeps the "already downloaded" list consistent. Progress bars are switched off in queue mode because they rewrite the line you are typing on; each download prints whole lines instead.
 - **Batch file safety.** The scripts avoid `if (...)` blocks entirely. A `)` inside an `echo` in such a block silently ends it and crashes the script, and `%errorlevel%` inside a block is read before the block runs. Both bit earlier versions.
 
 ## Known limitations
@@ -93,7 +109,7 @@ mp3tool/common.py    folders, archive, ffmpeg conversion, JS runtime, progress
 python -m unittest discover tests
 ```
 
-Offline tests cover link detection across all three sites (including mixed pastes and Soda Music), YouTube link shapes, the Douyin parser against a captured real share page, the cookie escalation logic, ffmpeg conversion with cover art, and the real yt-dlp + ffmpeg pipeline on local files, including a 3-chapter split with per-song tags.
+Offline tests cover the queue (paste order, adding while busy, duplicates, a crashing job not stopping the worker, typed commands), the compilation check, link detection across all three sites (including mixed pastes and Soda Music), YouTube link shapes, the Douyin parser against a captured real share page, the cookie escalation logic, ffmpeg conversion with cover art, and the real yt-dlp + ffmpeg pipeline on local files, including a 3-chapter split with per-song tags.
 
 ## Disclaimer
 

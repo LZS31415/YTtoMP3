@@ -15,7 +15,7 @@ import tempfile
 import urllib.request
 
 from .common import (add_to_archive, clean_title, convert_to_mp3, in_archive,
-                     sanitize_filename, unique_path)
+                     sanitize_filename, say, unique_path)
 
 MOBILE_UA = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 "
@@ -125,14 +125,14 @@ class DouyinClient:
                 try:
                     prepare()
                 except Exception as e:
-                    print(f"    ({label} unavailable: {str(e)[:120]})")
+                    say(f"    ({label} unavailable: {str(e)[:120]})")
                     continue
             html = self.fetch_text(share_url)
             try:
                 info = parse_douyin_share_page(html, aweme_id)
             except NoPostData:
                 continue
-            print(f"  Got the post using {label}.")
+            say(f"  Got the post using {label}.")
             return info
 
         err = NoPostData(
@@ -233,11 +233,11 @@ def download(url: str, out_dir: str, quality: str, client: DouyinClient) -> bool
         aweme_id = douyin_id(url, client)
         key = f"douyin {aweme_id}"
         if in_archive(out_dir, key):
-            print("  Nothing new: already in the folder.")
+            say("  Nothing new: already in the folder.")
             return True
 
         info = client.fetch_info(aweme_id)
-        print(f"  Downloading: {info['artist']} - {info['title']}")
+        say(f"  Downloading: {info['artist']} - {info['title']}")
         dest = unique_path(
             os.path.join(out_dir, sanitize_filename(f"{info['artist']} - {info['title']}") + ".mp3"),
             info["id"],
@@ -252,19 +252,19 @@ def download(url: str, out_dir: str, quality: str, client: DouyinClient) -> bool
                     client.download(info["cover_url"], cover)
                 except Exception:
                     cover = None
-            print("  Converting to MP3...")
+            say("  Converting to MP3...")
             convert_to_mp3(media, dest, info["title"], info["artist"], quality, cover, url)
 
         add_to_archive(out_dir, key)
-        print(f"  Saved: {os.path.basename(dest)}")
+        say(f"  Saved: {os.path.basename(dest)}")
         return True
     except Exception as e:
-        print(f"  Failed: {e}")
+        say(f"  Failed: {e}")
         html = getattr(e, "html", None)
         if html:
             try:
                 path = save_debug_page(out_dir, douyin_id(url), html)
-                print(f"  Saved what Douyin returned to {path} (send this file if you need help).")
+                say(f"  Saved what Douyin returned to {path} (send this file if you need help).")
             except Exception:
                 pass
         return False
