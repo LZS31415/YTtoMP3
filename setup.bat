@@ -4,7 +4,7 @@ REM Note for editors: never put ( or ) inside an echo within an if-block in
 REM this file. cmd treats ")" as the end of the block and the whole script
 REM crashes instantly. That is exactly the bug the old version had.
 echo ============================================
-echo  YouTube MP3 Downloader - Setup
+echo  YouTube / TikTok / Douyin MP3 Downloader - Setup
 echo ============================================
 echo.
 
@@ -12,7 +12,7 @@ python --version >nul 2>&1
 if errorlevel 1 goto :install_python
 echo [OK] Python found.
 
-echo Installing / updating yt-dlp and its JavaScript runtime. This can take a minute...
+echo Installing / updating yt-dlp, its JavaScript runtime and browser impersonation. This can take a minute...
 python -m pip install --upgrade pip --quiet
 python -m pip install --upgrade -r "%~dp0requirements.txt"
 if errorlevel 1 goto :pip_failed

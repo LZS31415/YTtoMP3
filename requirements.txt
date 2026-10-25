@@ -1,1 +1,1 @@
-yt-dlp[default,deno]
+yt-dlp[default,deno,curl-cffi]

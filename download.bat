@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 echo ============================================
-echo  YouTube Video / Playlist MP3 Downloader
+echo  YouTube / TikTok / Douyin MP3 Downloader
 echo ============================================
 echo.
 
@@ -10,8 +10,8 @@ if errorlevel 1 goto :no_setup
 python -c "import yt_dlp" >nul 2>&1
 if errorlevel 1 goto :no_setup
 
-REM The link is read by Python, not by "set /p": YouTube links contain "&",
-REM which cmd treats as a command separator.
+REM Links are read by Python, not by "set /p": YouTube links contain "&" and
+REM Douyin share text contains Chinese, both of which break cmd.
 python "%~dp0downloader.py" %*
 goto :end
 

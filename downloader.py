@@ -1,273 +1,93 @@
 """
-YouTube Video / Playlist to MP3 Downloader
+YouTube / TikTok / Douyin to MP3
 
-Paste a YouTube link and get MP3s in Downloads/YouTube Music.
-  - A video link downloads that song.
-  - A playlist link (youtube.com/playlist?list=...) downloads the whole playlist.
-  - A video opened from a playlist or Mix (watch?v=...&list=...) asks whether you
-    want just that song or the whole list.
+Paste a link, several links, or the whole share text from the TikTok/Douyin
+app, and get tagged MP3s with cover art.
+
+  YouTube  video, playlist, a song opened from a playlist or Mix (asks: just
+           this song or the whole list), and compilation videos with chapters
+           (asks: one MP3 per chapter or one long MP3).
+           Saved to Downloads/YouTube Music.
+  TikTok   video, short link, profile, collection.
+  Douyin   video and image posts, v.douyin.com share links, raw share text.
+           TikTok and Douyin are saved to Downloads/TikTok Music.
 
 Usage:
-  python downloader.py                      (interactive, paste links one by one)
-  python downloader.py <url> [<url> ...]
-  python downloader.py --all <url>          (whole playlist/Mix without asking)
-  python downloader.py --split <url>        (one MP3 per chapter for long compilations)
-
-Videos with chapters (the clickable timestamps under a compilation video) can
-be split into one MP3 per song. Interactive mode asks; the command line
-splits only with --split.
+  python downloader.py                       (interactive, paste links one by one)
+  python downloader.py <link or share text> [...]
+  python downloader.py --all <url>           (YouTube: whole playlist/Mix without asking)
+  python downloader.py --split <url>         (YouTube: one MP3 per chapter)
+  python downloader.py -b firefox <url>      (Douyin/TikTok: borrow cookies from this browser)
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import sys
-from urllib.parse import parse_qs, urlparse
+
+# Song titles in Chinese, Korean, emoji etc. must never crash the Windows console.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
 
 try:
-    import yt_dlp
-    from yt_dlp.postprocessor import FFmpegSplitChaptersPP
+    import yt_dlp  # noqa: F401
 except ImportError:
     print("yt-dlp not found. Please run setup.bat first.")
     sys.exit(1)
 
-# Song titles in Chinese, Korean, emoji etc. must never crash the Windows console.
-for stream in (sys.stdout, sys.stderr):
-    try:
-        stream.reconfigure(errors="replace")
-    except Exception:
-        pass
+from mp3tool import douyin, tiktok, youtube
+from mp3tool.common import DEFAULT_FOLDERS, find_js_runtime
+from mp3tool.links import extract_links
+
+NAMES = {"youtube": "YouTube", "tiktok": "TikTok", "douyin": "Douyin", "soda": "Soda Music"}
+SODA_MESSAGE = (
+    "  Soda Music (汽水音乐) links aren't supported. Its web page only plays a short "
+    "preview, and full-song downloads are a paid VIP feature in the app. If the song "
+    "is in a YouTube or Douyin video, paste that link instead."
+)
 
 
-DEFAULT_OUTPUT = os.path.join(os.path.expanduser("~"), "Downloads", "YouTube Music")
-ARCHIVE_NAME = ".downloaded.txt"
-YOUTUBE_HOSTS = ("youtube.com", "youtu.be", "music.youtube.com")
+class Session:
+    """Settings for one run, plus state worth keeping between links
+    (the Douyin cookie jar, so later Douyin links skip the cookie dance)."""
 
+    def __init__(self, args, interactive: bool):
+        self.output = args.output
+        self.quality = args.quality
+        self.browser = args.browser
+        # On the command line nothing may stop to ask, so unanswered
+        # questions get the safe default: just the song, no splitting.
+        self.want_all = args.want_all if (interactive or args.want_all is not None) else False
+        self.split = args.split if (interactive or args.split is not None) else False
+        self._douyin_client = None
 
-# --------------------------------------------------------------------------- #
-# Link handling
-# --------------------------------------------------------------------------- #
+    def folder(self, platform: str) -> str:
+        return self.output or DEFAULT_FOLDERS[platform]
 
-def is_youtube(url: str) -> bool:
-    host = (urlparse(url).hostname or "").lower()
-    return any(host == h or host.endswith("." + h) for h in YOUTUBE_HOSTS)
+    @property
+    def douyin_client(self) -> douyin.DouyinClient:
+        if self._douyin_client is None:
+            self._douyin_client = douyin.DouyinClient(self.browser)
+        return self._douyin_client
 
-
-def classify(url: str) -> str:
-    """'video', 'playlist', 'video_in_playlist' or 'video_in_mix'."""
-    parsed = urlparse(url)
-    query = parse_qs(parsed.query)
-    list_id = (query.get("list") or [""])[0]
-    has_video = bool(query.get("v")) or parsed.hostname == "youtu.be" or "/shorts/" in parsed.path
-    if not list_id:
-        return "video"
-    if not has_video:
-        return "playlist"
-    # RD... lists are auto-generated Mixes / radio: long, and never what you
-    # meant if you just copied the link of the song you were listening to.
-    return "video_in_mix" if list_id.startswith("RD") else "video_in_playlist"
-
-
-def single_video_url(url: str) -> str:
-    """Strip playlist parameters so only the song itself is downloaded."""
-    parsed = urlparse(url)
-    if parsed.hostname == "youtu.be":
-        return f"https://youtu.be{parsed.path}"
-    video_id = parse_qs(parsed.query).get("v", [""])[0]
-    return f"https://www.youtube.com/watch?v={video_id}" if video_id else url
-
-
-def resolve_choice(url: str, kind: str, want_all: bool | None) -> tuple[str, bool]:
-    """Return (url_to_download, whole_list)."""
-    if kind == "video":
-        return url, False
-    if kind == "playlist":
-        return url, True
-    if want_all is None:  # interactive: ask
-        label = "a YouTube Mix (auto-generated, usually 25-50 songs)" if kind == "video_in_mix" else "a playlist"
-        print(f"  This song was opened from {label}.")
-        answer = input("  Download [1] just this song, or [2] the whole list? (Enter = 1): ").strip()
-        want_all = answer == "2"
-    return (url, True) if want_all else (single_video_url(url), False)
-
-
-# --------------------------------------------------------------------------- #
-# yt-dlp setup
-# --------------------------------------------------------------------------- #
-
-def find_js_runtime() -> dict | None:
-    """YouTube makes downloaders run a JavaScript challenge before it hands
-    out audio. yt-dlp needs a JS runtime for that. setup.bat installs Deno via
-    pip, which yt-dlp finds on its own; this just makes the choice explicit and
-    falls back to Node.js if that is what the PC has."""
-    try:
-        import deno
-        return {"deno": {"path": deno.find_deno_bin()}}
-    except Exception:
-        pass
-    if shutil.which("deno"):
-        return {"deno": {}}
-    node = shutil.which("node")
-    if node:
-        return {"node": {"path": node}}
-    return None
-
-
-class Stats:
-    def __init__(self):
-        self.done = 0       # videos fully processed
-        self.songs = 0      # extra MP3s created by chapter splitting
-        self.titles: list[str] = []
-
-
-# --------------------------------------------------------------------------- #
-# Chapter splitting
-# --------------------------------------------------------------------------- #
-
-def chapter_folder_template(out_dir: str) -> str:
-    return os.path.join(out_dir, "%(title)s", "%(section_number)02d - %(section_title)s.%(ext)s")
-
-
-def retag(path: str, title: str, album: str | None, track: str) -> None:
-    """Give a chapter its own title/track number; keeps artist and cover art."""
-    from mutagen.easyid3 import EasyID3
-    tags = EasyID3(path)
-    tags["title"] = title
-    if album:
-        tags["album"] = album
-    tags["tracknumber"] = track
-    tags.save()
-
-
-class SplitIntoSongsPP(FFmpegSplitChaptersPP):
-    """Splits a long video at its chapter timestamps, one MP3 per chapter.
-
-    yt-dlp's own splitter copies the whole video's tags into every piece, so a
-    music player would show 30 songs all called "Top Hits Compilation 2026".
-    This retags each piece with its chapter title, the video title as album,
-    and a track number, then deletes the long file it was cut from.
-    """
-
-    def __init__(self, downloader, stats: Stats):
-        super().__init__(downloader)
-        self.stats = stats
-
-    def run(self, info):
-        files_to_delete, info = super().run(info)
-        pieces = [c for c in (info.get("chapters") or [])
-                  if c.get("filepath") and os.path.exists(c["filepath"])]
-        if len(pieces) < 2:
-            return files_to_delete, info  # nothing split: keep the full file
-
-        total = len(pieces)
-        for n, chapter in enumerate(pieces, 1):
-            try:
-                retag(chapter["filepath"], chapter.get("title") or f"Track {n}",
-                      info.get("title"), f"{n}/{total}")
-            except Exception as e:  # tags are cosmetic, the audio is already there
-                print(f"  (could not tag {os.path.basename(chapter['filepath'])}: {e})")
-        self.stats.songs += total
-        print(f"  Split into {total} songs in: {os.path.dirname(pieces[0]['filepath'])}")
-        return files_to_delete + [info["filepath"]], info
-
-
-def decide_split(chapters: list, split: bool | None) -> bool:
-    if split is not None:
-        return split
-    names = [c.get("title") or "?" for c in chapters[:3]]
-    print(f"  This video has {len(chapters)} chapters, e.g. " + " | ".join(names))
-    answer = input("  Save [1] one MP3 per chapter, or [2] one long MP3? (Enter = 1): ").strip()
-    return answer != "2"
-
-
-def build_options(out_dir: str, quality: str, whole_list: bool, stats: Stats) -> dict:
-    def progress_hook(d):
-        info = d.get("info_dict", {})
-        title = (info.get("title") or "")[:50]
-        pos = info.get("playlist_index")
-        prefix = f"[{pos}] " if pos else ""
-        if d["status"] == "downloading":
-            pct = (d.get("_percent_str") or "").strip()
-            print(f"\r  {prefix}{title:<50} {pct:>7}", end="", flush=True)
-        elif d["status"] == "finished":
-            print(f"\r  {prefix}{title:<50} converting...", flush=True)
-
-    def pp_hook(d):
-        if d["status"] == "finished" and d.get("postprocessor") == "MoveFiles":
-            stats.done += 1
-            stats.titles.append(d.get("info_dict", {}).get("title", ""))
-
-    opts = {
-        "format": "bestaudio/best",
-        # "3 - Title.mp3" inside playlists, "Title.mp3" for single songs
-        "outtmpl": {
-            "default": os.path.join(out_dir, "%(playlist_index&{} - |)s%(title)s.%(ext)s"),
-            "chapter": chapter_folder_template(out_dir),  # used only when splitting
-        },
-        "windowsfilenames": True,
-        "noplaylist": not whole_list,
-        "lazy_playlist": True,          # start downloading song 1 before the whole list is read
-        "download_archive": os.path.join(out_dir, ARCHIVE_NAME),  # skip songs already downloaded
-        "ignoreerrors": True,           # skip private/removed videos instead of stopping
-        "quiet": True,
-        "noprogress": True,
-        "progress_hooks": [progress_hook],
-        "postprocessor_hooks": [pp_hook],
-        "writethumbnail": True,
-        "postprocessors": [
-            # YouTube thumbnails are WebP, which many MP3 players can't show: convert first
-            {"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"},
-            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality},
-            {"key": "FFmpegMetadata", "add_metadata": True},
-            {"key": "EmbedThumbnail"},
-        ],
-    }
-    runtime = find_js_runtime()
-    if runtime:
-        opts["js_runtimes"] = runtime
-    return opts
-
-
-# --------------------------------------------------------------------------- #
-# Main flow
-# --------------------------------------------------------------------------- #
-
-def download(url: str, out_dir: str, quality: str, want_all: bool | None,
-             split: bool | None = None) -> bool:
-    url, whole_list = resolve_choice(url, classify(url), want_all)
-    os.makedirs(out_dir, exist_ok=True)
-    print(f"\n{'Downloading playlist' if whole_list else 'Downloading'}: {url}")
-    if whole_list:
-        print("  (Songs already in the folder are skipped. Large lists take a while.)")
-
-    stats = Stats()
-    with yt_dlp.YoutubeDL(build_options(out_dir, quality, whole_list, stats)) as ydl:
-        if whole_list:
-            # Asking per video would interrupt a long playlist, so playlists
-            # only split when --split was given.
-            if split:
-                ydl.add_post_processor(SplitIntoSongsPP(ydl, stats), when="post_process")
-            ydl.download([url])
-        else:
-            # Read the video's details first so we can see its chapters, then download.
-            info = ydl.extract_info(url, download=False, process=False)
-            if info:
-                chapters = info.get("chapters") or []
-                if len(chapters) >= 2 and decide_split(chapters, split):
-                    ydl.add_post_processor(SplitIntoSongsPP(ydl, stats), when="post_process")
-                ydl.process_ie_result(info, download=True)
-
-    if stats.songs:
-        print(f"\nDone: {stats.songs} songs saved under {out_dir}")
-        return True
-    if stats.done:
-        print(f"\nDone: {stats.done} new MP3(s) in {out_dir}")
-        return True
-    print("\nNothing new was downloaded. Either it was already in the folder, or the video "
-          "is private/blocked. Run setup.bat to update yt-dlp, then try again.")
-    return False
+    def process(self, platform: str, url: str) -> bool:
+        print(f"\n[{NAMES[platform]}] {url}")
+        if platform == "soda":
+            print(SODA_MESSAGE)
+            return False
+        try:
+            if platform == "youtube":
+                return youtube.download(url, self.folder("youtube"), self.quality, self.want_all, self.split)
+            if platform == "tiktok":
+                return tiktok.download(url, self.folder("tiktok"), self.quality, self.browser)
+            return douyin.download(url, self.folder("douyin"), self.quality, self.douyin_client)
+        except Exception as e:  # one bad link must never end the session
+            print(f"  Failed: {e}")
+            return False
 
 
 def check_setup() -> None:
@@ -279,49 +99,63 @@ def check_setup() -> None:
               "Run setup.bat to fix this.\n")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Download YouTube videos or playlists as MP3.")
-    parser.add_argument("urls", nargs="*")
-    parser.add_argument("-o", "--output", default=DEFAULT_OUTPUT)
-    parser.add_argument("-q", "--quality", default="192", choices=["128", "192", "256", "320"])
+def run_text(session: Session, text: str) -> tuple[int, int]:
+    """Process every link in the text. Returns (ok, failed)."""
+    links = extract_links(text)
+    if not links:
+        print("  No YouTube, TikTok or Douyin link found in that text.")
+        return 0, 1
+    ok = sum(session.process(p, u) for p, u in links)
+    return ok, len(links) - ok
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Download YouTube, TikTok and Douyin audio as MP3.")
+    parser.add_argument("links", nargs="*", help="links or pasted share text")
+    parser.add_argument("-o", "--output", default=None,
+                        help="output folder (default: Downloads/YouTube Music or Downloads/TikTok Music)")
+    parser.add_argument("-q", "--quality", default="192", choices=["128", "192", "256", "320"],
+                        help="MP3 bitrate in kbps (default 192)")
+    parser.add_argument("-b", "--browser", default=None,
+                        help="browser to borrow cookies from if Douyin/TikTok need them (firefox, edge, chrome)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--all", dest="want_all", action="store_const", const=True,
-                       help="for a song opened from a playlist/Mix, download the whole list")
+                       help="YouTube: for a song opened from a playlist/Mix, download the whole list")
     group.add_argument("--single", dest="want_all", action="store_const", const=False,
-                       help="for a song opened from a playlist/Mix, download only that song")
+                       help="YouTube: for a song opened from a playlist/Mix, download only that song")
     split_group = parser.add_mutually_exclusive_group()
     split_group.add_argument("--split", dest="split", action="store_const", const=True,
-                             help="split videos with chapters into one MP3 per chapter")
+                             help="YouTube: split videos with chapters into one MP3 per chapter")
     split_group.add_argument("--no-split", dest="split", action="store_const", const=False,
-                             help="never split, and don't ask")
-    args = parser.parse_args()
+                             help="YouTube: never split, and don't ask")
+    return parser.parse_args(argv)
 
+
+def main() -> None:
+    args = parse_args()
     check_setup()
 
-    if args.urls:
-        want_all = False if args.want_all is None else args.want_all  # never block on input()
-        split = False if args.split is None else args.split
-        failed = 0
-        for url in args.urls:
-            if not is_youtube(url):
-                print(f"Skipping (not a YouTube link): {url}")
-                failed += 1
-                continue
-            failed += not download(url, args.output, args.quality, want_all, split)
+    if args.links:
+        session = Session(args, interactive=False)
+        ok, failed = run_text(session, " ".join(args.links))
+        print(f"\nFinished: {ok} OK, {failed} failed.")
         sys.exit(1 if failed else 0)
 
-    print(f"Saving to: {args.output}")
+    session = Session(args, interactive=True)
+    if args.output:
+        print(f"Saving to: {args.output}")
+    else:
+        print(f"YouTube saves to: {DEFAULT_FOLDERS['youtube']}")
+        print(f"TikTok/Douyin save to: {DEFAULT_FOLDERS['tiktok']}")
     while True:
         try:
-            url = input("\nPaste a YouTube link (video or playlist), or press Enter to quit: ").strip()
+            text = input("\nPaste a YouTube, TikTok or Douyin link (or share text), "
+                         "or press Enter to quit: ").strip()
         except (EOFError, KeyboardInterrupt):
             break
-        if not url:
+        if not text:
             break
-        if not is_youtube(url):
-            print("  That doesn't look like a YouTube link.")
-            continue
-        download(url, args.output, args.quality, args.want_all, args.split)
+        run_text(session, text)
 
 
 if __name__ == "__main__":
